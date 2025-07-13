@@ -1,0 +1,12 @@
+This project as a whole is licensed under GPLv3 (full text available in LICENSE.GPL3).
+
+Third-party component licensing notices:
+-------------------------------------------------------
+1. LightweightSemaphore implementation (from moodycamel)
+   - Includes Jeff Preshing's code under zlib License
+   - Includes Cameron Desrochers' code under dual BSD/Boost License
+   
+2. Original license text copies:
+   - See licenses/zlib.txt
+   - See licenses/BSD-2-Clause.txt
+   - See licenses/BSL-1.0.txt
