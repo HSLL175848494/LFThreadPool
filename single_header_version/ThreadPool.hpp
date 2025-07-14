@@ -1279,7 +1279,7 @@ namespace HSLL
 			assert(buffer);
 			assert(elements && count);
 			count = std::min(count, capacity);
-			unsigned num = count;
+			unsigned int num = count;
 			unsigned long long current_tail = tryLockTailBulk(num);
 
 			if (UNLIKELY(!num))
@@ -1369,18 +1369,19 @@ namespace HSLL
 			assert(buffer);
 			assert(elements && count);
 			count = std::min(count, capacity);
-			unsigned long long current_head = tryLockHeadBulk(count);
+			unsigned int num = count;
+			unsigned long long current_head = tryLockHeadBulk(num);
 
-			if (UNLIKELY(!count))
+			if (UNLIKELY(!num))
 				return 0;
 
-			for (unsigned int i = 0; i < count; i++)
+			for (unsigned int i = 0; i < num; i++)
 			{
 				unsigned long long index = current_head + i;
 				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
 
-				if (LIKELY(i != count - 1))
+				if (LIKELY(i != num - 1))
 					waitReady(slot.sequence, index + 1);
 
 				TYPE* item = (TYPE*)slot.storage;
@@ -1388,6 +1389,9 @@ namespace HSLL
 				item->~TYPE();
 				slot.sequence.store(index + capacity, std::memory_order_release);
 			}
+
+			if (LIKELY(num < count))
+				return num + popBulk(elements + num, count - num);
 
 			return count;
 		}

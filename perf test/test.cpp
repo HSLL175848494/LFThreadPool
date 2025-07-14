@@ -19,11 +19,11 @@ void testC() {
 
 }
 
-#define WORKER 8
-#define PRODUCER 1
+#define WORKER 2
+#define PRODUCER 8
 #define SUBMIT_BATCH 1
 #define PROCESS_BATCH 32
-#define PEER 10000000
+#define PEER 10000000/PRODUCER
 #define TSIZE 24
 #define QUEUELEN 8192
 #define FUNC testC
@@ -127,12 +127,12 @@ int main()
 	printf("%-20s: %d\n", "Tasks per Producer", PEER);
 	printf("%-20s: %lld\n", "Total Tasks", total_tasks);
 
-	
+
 	// Single task submission test
 	double single_time = test_single_submit();
 	double single_throughput = total_tasks / (single_time / 1000.0) / 1000000.0;		 // M/s
 	double single_time_per_million = (single_time / 1000.0) / (total_tasks / 1000000.0); // s/M
-	
+
 
 	// Batch submission test
 	double bulk_time = test_bulk_submit();
@@ -144,7 +144,7 @@ int main()
 		"Bulk Submit Time", bulk_time,
 		"Throughput", bulk_throughput,
 		"Time/Million", bulk_time_per_million);
-	
+
 	printf("%-20s: %10.2f ms | %10s: %8.2f M/s | %15s: %.4f s/M\n",
 		"Single Submit Time", single_time,
 		"Throughput", single_throughput,
