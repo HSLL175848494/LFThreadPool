@@ -32,8 +32,8 @@ namespace HSLL
 
 
 	/**
-			 * @brief Helper template for bulk construction (copy/move)
-			 */
+	* @brief Helper template for bulk construction (copy/move)
+	*/
 	template <typename T, BULK_CMETHOD Method>
 	struct BulkConstructHelper;
 
@@ -61,11 +61,9 @@ namespace HSLL
 		BulkConstructHelper<T, Method>::construct(dst, src);
 	}
 
-
 	template<typename TYPE>
 	class TPLFQueue
 	{
-
 		struct Slot
 		{
 			alignas(TYPE) unsigned char storage[sizeof(TYPE)];
@@ -74,7 +72,6 @@ namespace HSLL
 
 		Slot* buffer;
 		unsigned int capacity;
-		unsigned int mask;
 		std::atomic<unsigned long long> head;
 		std::atomic<unsigned long long> tail;
 
@@ -86,7 +83,7 @@ namespace HSLL
 			while (true)
 			{
 				unsigned long long required = current_head + count;
-				slot = buffer + ((required - 1) & mask);
+				slot = buffer + ((required - 1) % capacity);
 				unsigned long long seq = slot->sequence.load(std::memory_order_acquire);
 				long long diff = (long long)(seq - required);
 
@@ -134,7 +131,7 @@ namespace HSLL
 			while (true)
 			{
 				unsigned long long required = current_tail + count - 1;
-				slot = buffer + (required & mask);
+				slot = buffer + (required % capacity);
 				unsigned long long seq = slot->sequence.load(std::memory_order_acquire);
 				long long diff = (long long)(seq - required);
 
@@ -182,44 +179,32 @@ namespace HSLL
 
 		TPLFQueue() : buffer(nullptr) {}
 
-		~TPLFQueue()
+		bool init(unsigned int user_capacity)
 		{
-			release();
-		}
-
-		bool init(unsigned int cap)
-		{
-			if (buffer || cap == 0)
+			if (buffer || user_capacity < 2)
 				return false;
 
-			unsigned int adjust = 1;
-
-			while (cap > adjust)
-				adjust <<= 1;
-
-
-			unsigned long long totalsize = sizeof(Slot) * adjust;
-			buffer = (Slot*)(ALIGNED_MALLOC(totalsize, std::max(alignof(TYPE), (size_t)64)));
+			capacity = user_capacity;
+			buffer = (Slot*)(ALIGNED_MALLOC(sizeof(Slot) * capacity, std::max(alignof(TYPE), (size_t)64)));
 
 			if (!buffer)
 				return false;
 
-			for (unsigned int i = 0; i < adjust; ++i)
+			for (unsigned int i = 0; i < capacity; ++i)
 			{
 				new (&buffer[i]) Slot;
-				buffer[i].sequence.store(i, std::memory_order_relaxed);
+				buffer[i].sequence.store(i, std::memory_order_release);
 			}
 
 			head = 0;
 			tail = 0;
-			capacity = adjust;
-			mask = capacity - 1;
 			return true;
 		}
 
 		template <typename... Args>
 		bool emplace(Args &&...args)
 		{
+			assert(buffer);
 			Slot* slot;
 			unsigned long long current_tail;
 
@@ -236,6 +221,7 @@ namespace HSLL
 		template <class T>
 		bool push(T&& item)
 		{
+			assert(buffer);
 			Slot* slot;
 			unsigned long long current_tail;
 
@@ -252,7 +238,9 @@ namespace HSLL
 		template <BULK_CMETHOD METHOD = COPY>
 		unsigned int pushBulk(TYPE* elements, unsigned int count)
 		{
-			assert(elements && count && count <= capacity);
+			assert(buffer);
+			assert(elements && count);
+			count = std::min(count, capacity);
 			unsigned num = count;
 			unsigned long long current_tail = tryLockTailBulk(num);
 
@@ -262,7 +250,7 @@ namespace HSLL
 			for (unsigned int i = 0; i < num; i++)
 			{
 				unsigned long long index = current_tail + i;
-				unsigned int slot_idx = (index & mask);
+				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
 
 				if (LIKELY(i != num - 1))
@@ -282,8 +270,9 @@ namespace HSLL
 		template <BULK_CMETHOD METHOD = COPY>
 		unsigned int pushBulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
 		{
-			unsigned int total = count1 + count2;
-			assert(part1 && part2 && count1 && total <= capacity);
+			assert(buffer);
+			assert(part1 && part2 && count1);
+			unsigned int total = std::min(count1 + count2, capacity);
 			unsigned int num = total;
 			unsigned long long current_tail = tryLockTailBulk(num);
 
@@ -293,7 +282,7 @@ namespace HSLL
 			for (unsigned int i = 0; i < num; i++)
 			{
 				unsigned long long index = current_tail + i;
-				unsigned int slot_idx = (index & mask);
+				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
 				TYPE* item = reinterpret_cast<TYPE*>(slot.storage);
 
@@ -321,6 +310,7 @@ namespace HSLL
 
 		bool pop(TYPE& out)
 		{
+			assert(buffer);
 			Slot* slot;
 			unsigned long long current_head;
 
@@ -338,7 +328,9 @@ namespace HSLL
 
 		unsigned int popBulk(TYPE* elements, unsigned int count)
 		{
-			assert(elements && count && count <= capacity);
+			assert(buffer);
+			assert(elements && count);
+			count = std::min(count, capacity);
 			unsigned long long current_head = tryLockHeadBulk(count);
 
 			if (UNLIKELY(!count))
@@ -347,7 +339,7 @@ namespace HSLL
 			for (unsigned int i = 0; i < count; i++)
 			{
 				unsigned long long index = current_head + i;
-				unsigned int slot_idx = (index & mask);
+				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
 
 				if (LIKELY(i != count - 1))
@@ -364,6 +356,7 @@ namespace HSLL
 
 		unsigned int get_size()
 		{
+			assert(buffer);
 			long long h = (long long)head.load(std::memory_order_acquire);
 			long long t = (long long)tail.load(std::memory_order_acquire);
 			return t - h;
@@ -371,32 +364,37 @@ namespace HSLL
 
 		unsigned long long get_bsize()
 		{
+			assert(buffer);
 			return sizeof(Slot) * capacity;
 		}
 
 		void release()
 		{
-			if (buffer)
+			assert(buffer);
+			unsigned long long current_head = head.load();
+			unsigned long long current_tail = tail.load();
+
+			while (current_head != current_tail)
 			{
-				unsigned long long current_head = head.load();
-				unsigned long long current_tail = tail.load();
-
-				while (current_head != current_tail)
+				Slot& slot = buffer[current_head % capacity];
+				if (slot.sequence.load() == current_head + 1)
 				{
-					Slot& slot = buffer[current_head & mask];
-					if (slot.sequence.load() == current_head + 1)
-					{
-						TYPE* free_ptr = (TYPE*)slot.storage;
-						free_ptr->~TYPE();
-					}
-					current_head++;
+					TYPE* free_ptr = (TYPE*)slot.storage;
+					free_ptr->~TYPE();
 				}
-
-				ALIGNED_FREE(buffer);
-				head = 0;
-				tail = 0;
-				buffer = nullptr;
+				current_head++;
 			}
+
+			ALIGNED_FREE(buffer);
+			head = 0;
+			tail = 0;
+			buffer = nullptr;
+		}
+
+		~TPLFQueue()
+		{
+			if (buffer)
+				release();
 		}
 
 		TPLFQueue(const TPLFQueue&) = delete;
@@ -428,32 +426,38 @@ namespace HSLL
 
 		void stopWait()
 		{
+			assert(flag);
 			return isStopped.store(true, std::memory_order_release);
 		}
 
 		bool is_Stopped()
 		{
+			assert(flag);
 			return isStopped.load(std::memory_order_relaxed);
 		}
 
 		bool is_Stopped_Real()
 		{
+			assert(flag);
 			return isStopped.load(std::memory_order_acquire);
 		}
 
 		unsigned int get_size()
 		{
+			assert(flag);
 			return queue.get_size();
 		}
 
 		unsigned long long get_bsize()
 		{
+			assert(flag);
 			return queue.get_bsize();
 		}
 
 		template <typename... Args>
 		bool emplace(Args &&...args)
 		{
+			assert(flag);
 			if (LIKELY(queue.emplace(std::forward<Args>(args)...)))
 			{
 				sem.signal();
@@ -466,6 +470,7 @@ namespace HSLL
 		template <class T>
 		bool push(T&& item)
 		{
+			assert(flag);
 			if (LIKELY(queue.push(std::forward<T>(item))))
 			{
 				sem.signal();
@@ -478,8 +483,8 @@ namespace HSLL
 		template <BULK_CMETHOD METHOD = COPY>
 		unsigned int pushBulk(TYPE* elements, unsigned int count)
 		{
+			assert(flag);
 			unsigned int num;
-
 			if (LIKELY(num = queue.template pushBulk<METHOD>(elements, count)))
 			{
 				sem.signal(num);
@@ -492,8 +497,8 @@ namespace HSLL
 		template <BULK_CMETHOD METHOD = COPY>
 		unsigned int pushBulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
 		{
+			assert(flag);
 			unsigned int num;
-
 			if (LIKELY(num = queue.template pushBulk<METHOD>(part1, count1, part2, count2)))
 			{
 				sem.signal(num);
@@ -505,6 +510,7 @@ namespace HSLL
 
 		bool pop(TYPE& element)
 		{
+			assert(flag);
 			if (LIKELY(sem.tryWait()))
 			{
 				while (UNLIKELY(!queue.pop(element)));
@@ -516,6 +522,7 @@ namespace HSLL
 
 		bool wait_pop(TYPE& element, std::int64_t timeout_usecs)
 		{
+			assert(flag);
 			if (LIKELY(sem.wait(timeout_usecs)))
 			{
 				while (UNLIKELY(!queue.pop(element)));
@@ -527,8 +534,8 @@ namespace HSLL
 
 		unsigned int popBulk(TYPE* elements, unsigned int count)
 		{
+			assert(flag);
 			unsigned int num;
-
 			if (LIKELY(num = sem.tryWaitMany(count)))
 			{
 				unsigned int succeed = 0;
@@ -544,8 +551,8 @@ namespace HSLL
 
 		unsigned int wait_popBulk(TYPE* elements, unsigned int count, std::int64_t timeout_usecs)
 		{
+			assert(flag);
 			unsigned int num = 0;
-
 			if (LIKELY(num = sem.waitMany(count, timeout_usecs)))
 			{
 				unsigned int succeed = 0;
@@ -561,24 +568,22 @@ namespace HSLL
 
 		void release()
 		{
-			if (flag)
-			{
-				queue.release();
-				sem.~LightweightSemaphore();
-				new (&sem) moodycamel::LightweightSemaphore();
-				flag = false;
-			}
+			assert(flag);
+			queue.release();
+			sem.~LightweightSemaphore();
+			new (&sem) moodycamel::LightweightSemaphore();
+			flag = false;
 		}
 
 		~TPBLFQueue()
 		{
-			release();
+			if (flag)
+				release();
 		}
 
 		TPBLFQueue(const TPBLFQueue&) = delete;
 		TPBLFQueue& operator=(const TPBLFQueue&) = delete;
 	};
-
 }
 
 #endif // HSLL_TBLOCKFREEQUEUEK

@@ -60,12 +60,6 @@ void example_async()
 	printf("%s %d\n", "async task:", total);
 }
 
-void example_pos_insert()
-{
-	pool.emplace<INSERT_POS::TAIL>(&TestFunc, std::string("example_insert_tail"));
-	pool.emplace<INSERT_POS::HEAD>(&TestFunc, std::string("example_insert_head"));
-}
-
 void example_bigtask_callable()
 {
 	double param = 1;
@@ -114,7 +108,6 @@ int main()
 	example_emplace();
 	example_bulk();
 	example_async();
-	example_pos_insert();
 	example_bigtask_callable();
 	example_bigtask_auto();
 	pool.exit(true);

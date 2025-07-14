@@ -159,9 +159,9 @@ namespace HSLL
 
 		/**
 		* @brief Initializes thread pool resources
-		* @param capacity Capacity of each internal queue
-		* @param minThreadNum Minimum number of worker threads
-		* @param maxThreadNum Maximum number of worker threads
+		* @param capacity Capacity of each internal queue (>2)
+		* @param minThreadNum Minimum number of worker threads (!=0)
+		* @param maxThreadNum Maximum number of worker threads (>=minThreadNum)
 		* @param batchSize Maximum tasks to process per batch (min 1)
 		* @param adjustInterval Time interval for checking the load and adjusting the number of active threads
 		* @return true if initialization succeeded, false otherwise
@@ -170,7 +170,7 @@ namespace HSLL
 			unsigned int maxThreadNum, unsigned int batchSize = 1,
 			std::chrono::milliseconds adjustInterval = std::chrono::milliseconds(3000)) noexcept
 		{
-			if (batchSize == 0 || minThreadNum == 0 || batchSize > capacity || minThreadNum > maxThreadNum)
+			if (batchSize == 0 || minThreadNum == 0 || capacity < 2 || minThreadNum > maxThreadNum)
 				return false;
 
 			unsigned int succeed = 0;
@@ -206,7 +206,7 @@ namespace HSLL
 			this->minThreadNum = minThreadNum;
 			this->maxThreadNum = maxThreadNum;
 			this->threadNum = maxThreadNum;
-			this->batchSize = batchSize;
+			this->batchSize = std::min(batchSize, capacity);
 			this->queueLength = capacity;
 			this->adjustInterval = adjustInterval;
 			workers.reserve(maxThreadNum);
@@ -253,6 +253,8 @@ namespace HSLL
 		template <typename... Args>
 		bool emplace(Args &&...args) noexcept
 		{
+			assert(queues);
+
 			if (maxThreadNum == 1)
 				return queues->emplace(std::forward<Args>(args)...);
 
@@ -269,6 +271,8 @@ namespace HSLL
 		template <class U>
 		bool enqueue(U&& task) noexcept
 		{
+			assert(queues);
+
 			if (maxThreadNum == 1)
 				return queues->push(std::forward<U>(task));
 
@@ -286,6 +290,8 @@ namespace HSLL
 		template <BULK_CMETHOD METHOD = COPY>
 		unsigned int enqueue_bulk(T* tasks, unsigned int count) noexcept
 		{
+			assert(queues);
+
 			if (maxThreadNum == 1)
 				return queues->template pushBulk<METHOD>(tasks, count);
 
@@ -306,6 +312,8 @@ namespace HSLL
 		template <BULK_CMETHOD METHOD = COPY>
 		unsigned int enqueue_bulk(T* part1, unsigned int count1, T* part2, unsigned int count2) noexcept
 		{
+			assert(queues);
+
 			if (maxThreadNum == 1)
 				return queues->template pushBulk<METHOD>(part1, count1, part2, count2);
 
@@ -316,6 +324,8 @@ namespace HSLL
 		//Get the maximum occupied space of the thread pool.
 		unsigned long long get_max_usage()
 		{
+			assert(queues);
+
 			return  maxThreadNum * queues->get_bsize();
 		}
 
@@ -329,6 +339,8 @@ namespace HSLL
 		 */
 		void join()
 		{
+			assert(queues);
+
 			while (true)
 			{
 				bool flag = true;
@@ -362,6 +374,8 @@ namespace HSLL
 		template <class Rep, class Period>
 		void join(const std::chrono::duration<Rep, Period>& interval)
 		{
+			assert(queues);
+
 			while (true)
 			{
 				bool flag = true;
@@ -387,46 +401,46 @@ namespace HSLL
 		 */
 		void exit(bool shutdownPolicy = true) noexcept
 		{
-			if (queues)
+			assert(queues);
+
+			if (maxThreadNum > 1)
 			{
-				if (maxThreadNum > 1)
-				{
-					exitFlag = true;
-					exitSem.signal();
-					monitor.join();
-
-					for (unsigned i = 0; i < workers.size(); ++i)
-						startSem[i].signal();
-				}
-
-				this->shutdownPolicy = shutdownPolicy;
+				exitFlag = true;
+				exitSem.signal();
+				monitor.join();
 
 				for (unsigned i = 0; i < workers.size(); ++i)
-					queues[i].stopWait();
-
-				for (auto& worker : workers)
-					worker.join();
-
-				workers.clear();
-				workers.shrink_to_fit();
-
-				if (maxThreadNum > 1)
-				{
-					delete[] stopSem;
-					delete[] startSem;
-				}
-
-				for (unsigned i = 0; i < maxThreadNum; ++i)
-					queues[i].~TPBLFQueue<T>();
-
-				ALIGNED_FREE(queues);
-				queues = nullptr;
+					startSem[i].signal();
 			}
+
+			this->shutdownPolicy = shutdownPolicy;
+
+			for (unsigned i = 0; i < workers.size(); ++i)
+				queues[i].stopWait();
+
+			for (auto& worker : workers)
+				worker.join();
+
+			workers.clear();
+			workers.shrink_to_fit();
+
+			if (maxThreadNum > 1)
+			{
+				delete[] stopSem;
+				delete[] startSem;
+			}
+
+			for (unsigned i = 0; i < maxThreadNum; ++i)
+				queues[i].~TPBLFQueue<T>();
+
+			ALIGNED_FREE(queues);
+			queues = nullptr;
 		}
 
 		~ThreadPool() noexcept
 		{
-			exit(false);
+			if (queues)
+				exit(false);
 		}
 
 		ThreadPool(const ThreadPool&) = delete;
@@ -611,6 +625,9 @@ namespace HSLL
 			if (!(tasks = (T*)ALIGNED_MALLOC(sizeof(T) * batchSize, alignof(T))))
 				std::abort();
 
+			unsigned int size_threshold = batchSize;
+			unsigned int round_threshold = batchSize / 2;
+
 			if (maxThreadNum == 1)
 			{
 				while (true)
@@ -619,7 +636,8 @@ namespace HSLL
 					{
 						unsigned int round = 1;
 						unsigned int size = queue->get_size();
-						while (size < batchSize && round < batchSize / 2)
+
+						while (size < size_threshold && round < round_threshold)
 						{
 							std::this_thread::yield();
 							size = queue->get_size();
@@ -627,7 +645,7 @@ namespace HSLL
 							std::this_thread::yield();
 						}
 
-						if (size && (count = queue->popBulk(tasks, batchSize)))
+						if (size && (count = queue->popBulk(tasks, size_threshold)))
 							execute_tasks(tasks, count);
 						else
 							break;
@@ -663,7 +681,8 @@ namespace HSLL
 					{
 						unsigned int round = 1;
 						unsigned int size = queue->get_size();
-						while (size < batchSize && round < batchSize / 2)
+
+						while (size < size_threshold && round < round_threshold)
 						{
 							std::this_thread::yield();
 							size = queue->get_size();
@@ -671,7 +690,7 @@ namespace HSLL
 							std::this_thread::yield();
 						}
 
-						if (size && (count = queue->popBulk(tasks, batchSize)))
+						if (size && (count = queue->popBulk(tasks, size_threshold)))
 							execute_tasks(tasks, count);
 						else
 							break;
@@ -818,7 +837,7 @@ namespace HSLL
 		 */
 		unsigned int submit() noexcept
 		{
-			if (size == 0)
+			if (!size)
 				return 0;
 
 			unsigned int start = (index - size + BATCH) % BATCH;
