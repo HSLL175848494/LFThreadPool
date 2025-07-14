@@ -347,7 +347,7 @@ namespace HSLL
 
 				for (int i = 0; i < maxThreadNum; ++i)
 				{
-					if (queues[i].get_size()())
+					if (queues[i].get_size())
 					{
 						flag = false;
 						break;

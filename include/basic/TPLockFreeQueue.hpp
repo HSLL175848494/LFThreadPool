@@ -95,7 +95,7 @@ namespace HSLL
 				{
 					if (head.compare_exchange_weak(
 						current_head, required,
-						std::memory_order_relaxed, std::memory_order_relaxed
+						std::memory_order_release, std::memory_order_relaxed
 					)) break;
 				}
 				else
@@ -108,9 +108,10 @@ namespace HSLL
 			return slot;
 		}
 
-		unsigned long long tryLockHeadBulk(unsigned int& count)
+		unsigned long long tryLockHeadBulk(unsigned int& count)//pop
 		{
 			unsigned long long current_head;
+
 			while (count)
 			{
 				if (tryLockHead(current_head, count))
@@ -119,7 +120,6 @@ namespace HSLL
 				count >>= 1;
 			}
 
-			count = 0;
 			return 0;
 		}
 
@@ -143,7 +143,7 @@ namespace HSLL
 				{
 					if (tail.compare_exchange_weak(
 						current_tail, required + 1,
-						std::memory_order_relaxed, std::memory_order_relaxed
+						std::memory_order_release, std::memory_order_relaxed
 					)) break;
 				}
 				else
@@ -155,9 +155,10 @@ namespace HSLL
 			return slot;
 		}
 
-		unsigned long long tryLockTailBulk(unsigned int& count)
+		unsigned long long tryLockTailBulk(unsigned int& count)//push
 		{
 			unsigned long long current_Tail;
+
 			while (count)
 			{
 				if (tryLockTail(current_Tail, count))
@@ -166,25 +167,25 @@ namespace HSLL
 				count >>= 1;
 			}
 
-			count = 0;
 			return 0;
 		}
 
-		void waitReady(std::atomic<unsigned long long>& sequence, unsigned long long require)
+		void waitReady(std::atomic<unsigned long long>& sequence, unsigned long long required)
 		{
-			while (sequence.load(std::memory_order_relaxed) != require);
+			while (sequence.load(std::memory_order_acquire) != required)
+				std::this_thread::yield();
 		}
 
 	public:
 
 		TPLFQueue() : buffer(nullptr) {}
 
-		bool init(unsigned int user_capacity)
+		bool init(unsigned int capacity)
 		{
-			if (buffer || user_capacity < 2)
+			if (buffer || capacity < 2)
 				return false;
 
-			capacity = user_capacity;
+			this->capacity = capacity;
 			buffer = (Slot*)(ALIGNED_MALLOC(sizeof(Slot) * capacity, std::max(alignof(TYPE), (size_t)64)));
 
 			if (!buffer)
@@ -240,6 +241,7 @@ namespace HSLL
 		{
 			assert(buffer);
 			assert(elements && count);
+
 			count = std::min(count, capacity);
 			unsigned int num = count;
 			unsigned long long current_tail = tryLockTailBulk(num);
@@ -271,7 +273,11 @@ namespace HSLL
 		unsigned int pushBulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
 		{
 			assert(buffer);
-			assert(part1 && part2 && count1);
+			assert(part1 && count1);
+
+			if (count2 == 0 || part2 == nullptr)
+				return pushBulk<METHOD>(part1, count1);
+
 			unsigned int total = std::min(count1 + count2, capacity);
 			unsigned int num = total;
 			unsigned long long current_tail = tryLockTailBulk(num);
@@ -363,7 +369,7 @@ namespace HSLL
 			assert(buffer);
 			long long h = (long long)head.load(std::memory_order_acquire);
 			long long t = (long long)tail.load(std::memory_order_acquire);
-			return t - h;
+			return std::min(capacity, (unsigned int)(t - h));
 		}
 
 		unsigned long long get_bsize()
