@@ -8,7 +8,6 @@
 #include <atomic>
 #include <thread>
 #include <assert.h>
-#include <condition_variable>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define LIKELY(x) __builtin_expect(!!(x), 1)
