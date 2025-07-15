@@ -30,7 +30,6 @@ namespace HSLL
 		MOVE
 	};
 
-
 	/**
 	* @brief Helper template for bulk construction (copy/move)
 	*/
@@ -62,8 +61,14 @@ namespace HSLL
 	}
 
 	template<typename TYPE>
+	class TPBLFQueue;
+
+	template<typename TYPE>
 	class TPLFQueue
 	{
+		template<typename TYPE>
+		friend class TPBLFQueue;
+
 		struct Slot
 		{
 			alignas(TYPE) unsigned char storage[sizeof(TYPE)];
@@ -172,8 +177,40 @@ namespace HSLL
 
 		void waitReady(std::atomic<unsigned long long>& sequence, unsigned long long required)
 		{
-			while (sequence.load(std::memory_order_acquire) != required)
-				std::this_thread::yield();
+			while (sequence.load(std::memory_order_relaxed) != required);
+		}
+
+		void wait_pop(TYPE& out)
+		{
+			assert(buffer);
+			Slot* slot;
+			unsigned long long current_head;
+			while (!(slot = tryLockHead(current_head)));
+
+			TYPE* item = (TYPE*)(slot->storage);
+			new (&out) TYPE(std::move(*item));
+			item->~TYPE();
+			slot->sequence.store(current_head + capacity, std::memory_order_release);
+		}
+
+		void wait_popBulk(TYPE* elements, unsigned int count)
+		{
+			assert(buffer);
+			assert(elements && count);
+			unsigned long long current_head;
+			while (!tryLockHead(current_head, count));
+
+			for (unsigned int i = 0; i < count; i++)
+			{
+				unsigned long long index = current_head + i;
+				unsigned int slot_idx = index % capacity;
+				Slot& slot = buffer[slot_idx];
+				waitReady(slot.sequence, index + 1);
+				TYPE* item = (TYPE*)slot.storage;
+				new (elements + i) TYPE(std::move(*item));
+				item->~TYPE();
+				slot.sequence.store(index + capacity, std::memory_order_release);
+			}
 		}
 
 	public:
@@ -254,10 +291,7 @@ namespace HSLL
 				unsigned long long index = current_tail + i;
 				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
-
-				if (LIKELY(i != num - 1))
-					waitReady(slot.sequence, index);
-
+				waitReady(slot.sequence, index);
 				TYPE* item = (TYPE*)(slot.storage);
 				bulk_construct<METHOD>(*item, elements[i]);
 				slot.sequence.store(index + 1, std::memory_order_release);
@@ -291,9 +325,7 @@ namespace HSLL
 				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
 				TYPE* item = reinterpret_cast<TYPE*>(slot.storage);
-
-				if (LIKELY(i != num - 1))
-					waitReady(slot.sequence, index);
+				waitReady(slot.sequence, index);
 
 				if (i < count1)
 					bulk_construct<METHOD>(*item, part1[i]);
@@ -348,10 +380,7 @@ namespace HSLL
 				unsigned long long index = current_head + i;
 				unsigned int slot_idx = index % capacity;
 				Slot& slot = buffer[slot_idx];
-
-				if (LIKELY(i != num - 1))
-					waitReady(slot.sequence, index + 1);
-
+				waitReady(slot.sequence, index + 1);
 				TYPE* item = (TYPE*)slot.storage;
 				new (elements + i) TYPE(std::move(*item));
 				item->~TYPE();
@@ -523,7 +552,7 @@ namespace HSLL
 			assert(flag);
 			if (LIKELY(sem.tryWait()))
 			{
-				while (UNLIKELY(!queue.pop(element)));
+				queue.wait_pop(element);
 				return true;
 			}
 
@@ -535,7 +564,7 @@ namespace HSLL
 			assert(flag);
 			if (LIKELY(sem.wait(timeout_usecs)))
 			{
-				while (UNLIKELY(!queue.pop(element)));
+				queue.wait_pop(element);
 				return true;
 			}
 
@@ -548,11 +577,7 @@ namespace HSLL
 			unsigned int num;
 			if (LIKELY(num = sem.tryWaitMany(count)))
 			{
-				unsigned int succeed = 0;
-
-				while (UNLIKELY(succeed < num))
-					succeed += queue.popBulk(elements + succeed, num - succeed);
-
+				queue.wait_popBulk(elements, num);
 				return num;
 			}
 
@@ -565,11 +590,7 @@ namespace HSLL
 			unsigned int num = 0;
 			if (LIKELY(num = sem.waitMany(count, timeout_usecs)))
 			{
-				unsigned int succeed = 0;
-
-				while (UNLIKELY(succeed < num))
-					succeed += queue.popBulk(elements + succeed, num - succeed);
-
+				queue.wait_popBulk(elements, num);
 				return num;
 			}
 
