@@ -160,3 +160,10 @@ graph LR
 - 📂 single_header_version-------Single-header version
 - 📄 README.md-------------------Chinese project documentation
 - 📄 README.en.md----------------English project documentation
+
+Here is the translation:
+
+## Other
+
+This is a version where the current queue has been replaced with `moodycamel::ConcurrentQueue`, demonstrating significantly improved performance:  
+[LFThreadPool2](https://github.com/HSLL175848494/LFThreadPool2)

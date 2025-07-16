@@ -162,3 +162,8 @@ graph LR
 - 📂 single_header_version-------单头文件版本
 - 📄 README.md-------------------中文项目说明
 - 📄 README.en.md----------------英文项目说明
+
+## 其它
+
+这是将当前队列用moodycamel::concurrentqueue替换后的版本, 它的性能表现更为出色：
+[LFThreadPool2](https://github.com/HSLL175848494/LFThreadPool2)
