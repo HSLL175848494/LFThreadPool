@@ -7,16 +7,21 @@
 #include "basic/TPRWLock.hpp"
 #include "basic/TPLockFreeQueue.hpp"
 
-namespace HSLL
-{
-
-#define HSLL_THREADPOOL_TIMEOUT 5
+#define HSLL_THREADPOOL_TIMEOUT_MILLISECONDS 5
 #define HSLL_THREADPOOL_SHRINK_FACTOR 0.25
 #define HSLL_THREADPOOL_EXPAND_FACTOR 0.75
 
-	static_assert(HSLL_THREADPOOL_TIMEOUT > 0, "Invalid timeout value.");
-	static_assert(HSLL_THREADPOOL_SHRINK_FACTOR < HSLL_THREADPOOL_EXPAND_FACTOR&& HSLL_THREADPOOL_EXPAND_FACTOR < 1.0
-		&& HSLL_THREADPOOL_SHRINK_FACTOR>0.0, "Invalid factors.");
+#define HSLL_THREADPOOL_TIMEOUT_MICROSECONDS \
+	HSLL_THREADPOOL_TIMEOUT_MILLISECONDS*1000
+
+static_assert(HSLL_THREADPOOL_TIMEOUT_MICROSECONDS == HSLL_THREADPOOL_TIMEOUT_MILLISECONDS * 1000,
+	"Modify the configuration to use HSLL_THREADPOOL_TIMEOUT_MILLISECONDS instead of HSLL_THREADPOOL_TIMEOUT_MICROSECONDS.");
+static_assert(HSLL_THREADPOOL_TIMEOUT_MILLISECONDS > 0, "Invalid timeout value.");
+static_assert(HSLL_THREADPOOL_SHRINK_FACTOR < HSLL_THREADPOOL_EXPAND_FACTOR&& HSLL_THREADPOOL_EXPAND_FACTOR < 1.0
+	&& HSLL_THREADPOOL_SHRINK_FACTOR>0.0, "Invalid factors.");
+
+namespace HSLL
+{
 
 	template <class T>
 	class SingleStealer
@@ -92,7 +97,7 @@ namespace HSLL
 			this->batchSize = batchSize;
 			this->queueLength = queueLength;
 			this->threadNum = threadNum;
-			this->threshold = std::min(2 * batchSize, queueLength);
+			this->threshold = std::min(2 * batchSize, queueLength / 2);
 			this->rwLock = rwLock;
 			this->queues = queues;
 			this->ignore = ignore;
@@ -131,7 +136,6 @@ namespace HSLL
 
 	private:
 
-		bool shutdownPolicy;			  ///< Thread pool shutdown policy: true for graceful shutdown	
 		unsigned int threadNum;			  ///< Number of worker threads/queues
 		unsigned int minThreadNum;
 		unsigned int maxThreadNum;
@@ -139,8 +143,10 @@ namespace HSLL
 		unsigned int queueLength;		  ///< Capacity of each internal queue
 		std::chrono::milliseconds adjustInterval;
 
+		T* containers;
 		ReadWriteLock rwLock;
 		std::atomic<bool> exitFlag;
+		std::atomic<bool> shutdownPolicy;			  ///< Thread pool shutdown policy: true for graceful shutdown	
 		moodycamel::LightweightSemaphore exitSem;
 		moodycamel::LightweightSemaphore* stopSem;
 		moodycamel::LightweightSemaphore* startSem;
@@ -170,35 +176,13 @@ namespace HSLL
 			unsigned int maxThreadNum, unsigned int batchSize = 1,
 			std::chrono::milliseconds adjustInterval = std::chrono::milliseconds(3000)) noexcept
 		{
-			if (batchSize == 0 || minThreadNum == 0 || capacity < 2 || minThreadNum > maxThreadNum)
+			assert(!queues);
+
+			if (batchSize == 0 || minThreadNum == 0 || capacity< 2 || minThreadNum > maxThreadNum)
 				return false;
 
-			unsigned int succeed = 0;
-
-			if (maxThreadNum > 1)
-			{
-				stopSem = new(std::nothrow) moodycamel::LightweightSemaphore[maxThreadNum];
-				if (!stopSem)
-					goto clean_1;
-
-				startSem = new(std::nothrow) moodycamel::LightweightSemaphore[maxThreadNum];
-				if (!startSem)
-					goto clean_2;
-			}
-
-			queues = (TPBLFQueue<T>*)ALIGNED_MALLOC(maxThreadNum * sizeof(TPBLFQueue<T>), 64);
-			if (!queues)
-				goto clean_3;
-
-			for (unsigned i = 0; i < maxThreadNum; ++i)
-			{
-				new (&queues[i]) TPBLFQueue<T>();
-
-				if (!queues[i].init(capacity))
-					goto clean_4;
-
-				succeed++;
-			}
+			if (!initResourse(capacity, maxThreadNum, batchSize))
+				return false;
 
 			this->index = 0;
 			this->exitFlag = false;
@@ -206,7 +190,7 @@ namespace HSLL
 			this->minThreadNum = minThreadNum;
 			this->maxThreadNum = maxThreadNum;
 			this->threadNum = maxThreadNum;
-			this->batchSize = std::min(batchSize, capacity);
+			this->batchSize = std::min(batchSize, capacity / 2);
 			this->queueLength = capacity;
 			this->adjustInterval = adjustInterval;
 			workers.reserve(maxThreadNum);
@@ -216,30 +200,6 @@ namespace HSLL
 
 			if (maxThreadNum > 1)
 				monitor = std::thread(&ThreadPool::load_monitor, this);
-
-			return true;
-
-		clean_4:
-
-			for (unsigned i = 0; i < succeed; ++i)
-				queues[i].~TPBLFQueue<T>();
-
-		clean_3:
-
-			ALIGNED_FREE(queues);
-			queues = nullptr;
-
-		clean_2:
-
-			if (maxThreadNum > 1)
-			{
-				delete[] stopSem;
-				stopSem = nullptr;
-			}
-
-		clean_1:
-
-			return false;
 		}
 
 
@@ -405,15 +365,15 @@ namespace HSLL
 
 			if (maxThreadNum > 1)
 			{
-				exitFlag = true;
 				exitSem.signal();
 				monitor.join();
-
-				for (unsigned i = 0; i < workers.size(); ++i)
-					startSem[i].signal();
 			}
 
+			exitFlag = true;
 			this->shutdownPolicy = shutdownPolicy;
+
+			for (unsigned i = 0; i < workers.size(); ++i)
+				startSem[i].signal();
 
 			for (unsigned i = 0; i < workers.size(); ++i)
 				queues[i].stopWait();
@@ -421,20 +381,7 @@ namespace HSLL
 			for (auto& worker : workers)
 				worker.join();
 
-			workers.clear();
-			workers.shrink_to_fit();
-
-			if (maxThreadNum > 1)
-			{
-				delete[] stopSem;
-				delete[] startSem;
-			}
-
-			for (unsigned i = 0; i < maxThreadNum; ++i)
-				queues[i].~TPBLFQueue<T>();
-
-			ALIGNED_FREE(queues);
-			queues = nullptr;
+			rleaseResourse();
 		}
 
 		~ThreadPool() noexcept
@@ -475,15 +422,6 @@ namespace HSLL
 
 			unsigned int half = threadNum / 2;
 			return queues[(index + half) % threadNum];
-		}
-
-		static inline void execute_tasks(T* tasks, unsigned int count)
-		{
-			for (unsigned int i = 0; i < count; ++i)
-			{
-				tasks[i].execute();
-				tasks[i].~T();
-			}
 		}
 
 		void load_monitor() noexcept
@@ -534,21 +472,45 @@ namespace HSLL
 		void worker(unsigned int index) noexcept
 		{
 			if (batchSize == 1)
-				process_single(queues + index, index);
+			{
+				if (maxThreadNum == 1)
+					process_single1(queues + index, index);
+				else
+					process_single2(queues + index, index);
+			}
 			else
-				process_bulk(queues + index, index, batchSize);
+			{
+				if (maxThreadNum == 1)
+					process_bulk1(queues + index, index);
+				else
+					process_bulk2(queues + index, index);
+			}
 		}
 
-		void process_single(TPBLFQueue<T>* queue, unsigned int index) noexcept
+		static inline void execute_tasks(T* tasks, unsigned int count)
 		{
-			alignas(alignof(T)) char storage[sizeof(T)];
-			T* task = (T*)(&storage);
+			for (unsigned int i = 0; i < count; ++i)
+			{
+				tasks[i].execute();
+				tasks[i].~T();
+			}
+		}
 
-			if (maxThreadNum == 1)
+		void process_single1(TPBLFQueue<T>* queue, unsigned int index) noexcept
+		{
+			T* task = containers + index * batchSize;
+
+			while (true)
 			{
 				while (true)
 				{
-					if (queue->wait_pop(*task, HSLL_THREADPOOL_TIMEOUT * 1000))
+					while (queue->pop(*task))
+					{
+						task->execute();
+						task->~T();
+					}
+
+					if (queue->wait_pop(*task, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS))
 					{
 						task->execute();
 						task->~T();
@@ -558,16 +520,30 @@ namespace HSLL
 						if (queue->is_Stopped_Real())
 							break;
 					}
+
+					if (queue->is_Stopped())
+						break;
 				}
+
+				bool  shutdownPolicy = this->shutdownPolicy.load();
 
 				while (shutdownPolicy && queue->pop(*task))
 				{
 					task->execute();
 					task->~T();
 				}
-				return;
-			}
 
+				stopSem[index].signal();
+				while (!startSem[index].wait());
+
+				if (exitFlag)
+					break;
+			}
+		}
+
+		void process_single2(TPBLFQueue<T>* queue, unsigned int index) noexcept
+		{
+			T* task = containers + index * batchSize;
 			SingleStealer<T> stealer(&rwLock, queues, queue, queueLength, &threadNum);
 
 			while (true)
@@ -587,7 +563,7 @@ namespace HSLL
 					}
 					else
 					{
-						if (queue->wait_pop(*task, HSLL_THREADPOOL_TIMEOUT * 1000))
+						if (queue->wait_pop(*task, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS))
 						{
 							task->execute();
 							task->~T();
@@ -603,6 +579,8 @@ namespace HSLL
 						break;
 				}
 
+				bool  shutdownPolicy = this->shutdownPolicy.load();
+
 				while (shutdownPolicy && queue->pop(*task))
 				{
 					task->execute();
@@ -617,19 +595,16 @@ namespace HSLL
 			}
 		}
 
-		void process_bulk(TPBLFQueue<T>* queue, unsigned int index, unsigned batchSize) noexcept
+		void process_bulk1(TPBLFQueue<T>* queue, unsigned int index) noexcept
 		{
-			T* tasks;
-			unsigned int count;
-
-			if (!(tasks = (T*)ALIGNED_MALLOC(sizeof(T) * batchSize, alignof(T))))
-				std::abort();
-
+			T* tasks = containers + index * batchSize;
 			unsigned int size_threshold = batchSize;
 			unsigned int round_threshold = batchSize / 2;
 
-			if (maxThreadNum == 1)
+			while (true)
 			{
+				unsigned int count;
+
 				while (true)
 				{
 					while (true)
@@ -651,7 +626,7 @@ namespace HSLL
 							break;
 					}
 
-					count = queue->wait_popBulk(tasks, batchSize, HSLL_THREADPOOL_TIMEOUT * 1000);
+					count = queue->wait_popBulk(tasks, size_threshold, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS);
 
 					if (count)
 					{
@@ -662,19 +637,35 @@ namespace HSLL
 						if (queue->is_Stopped_Real())
 							break;
 					}
+
+					if (queue->is_Stopped())
+						break;
 				}
 
-				while (shutdownPolicy && (count = queue->popBulk(tasks, batchSize)))
+				bool  shutdownPolicy = this->shutdownPolicy.load();
+
+				while (shutdownPolicy && (count = queue->popBulk(tasks, size_threshold)))
 					execute_tasks(tasks, count);
 
-				ALIGNED_FREE(tasks);
-				return;
-			}
+				stopSem[index].signal();
+				while (!startSem[index].wait());
 
+				if (exitFlag)
+					break;
+			}
+		}
+
+		void process_bulk2(TPBLFQueue<T>* queue, unsigned int index) noexcept
+		{
+			T* tasks = containers + index * batchSize;
+			unsigned int size_threshold = batchSize;
+			unsigned int round_threshold = batchSize / 2;
 			BulkStealer<T> stealer(&rwLock, queues, queue, queueLength, &threadNum, batchSize);
 
 			while (true)
 			{
+				unsigned int count;
+
 				while (true)
 				{
 					while (true)
@@ -703,7 +694,7 @@ namespace HSLL
 					}
 					else
 					{
-						count = queue->wait_popBulk(tasks, batchSize, HSLL_THREADPOOL_TIMEOUT * 1000);
+						count = queue->wait_popBulk(tasks, size_threshold, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS);
 
 						if (count)
 						{
@@ -720,7 +711,9 @@ namespace HSLL
 						break;
 				}
 
-				while (shutdownPolicy && (count = queue->popBulk(tasks, batchSize)))
+				bool  shutdownPolicy = this->shutdownPolicy.load();
+
+				while (shutdownPolicy && (count = queue->popBulk(tasks, size_threshold)))
 					execute_tasks(tasks, count);
 
 				stopSem[index].signal();
@@ -729,8 +722,67 @@ namespace HSLL
 				if (exitFlag)
 					break;
 			}
+		}
 
-			ALIGNED_FREE(tasks);
+		bool initResourse(unsigned int capacity, unsigned int maxThreadNum, unsigned int batchSize)
+		{
+			unsigned int succeed = 0;
+
+			if (!(startSem = new(std::nothrow) moodycamel::LightweightSemaphore[2 * maxThreadNum]))
+				goto clean_1;
+
+			stopSem = startSem + maxThreadNum;
+
+			if (!(containers = (T*)ALIGNED_MALLOC(sizeof(T) * batchSize * maxThreadNum, alignof(T))))
+				goto clean_2;
+
+			if (!(queues = (TPBLFQueue<T>*)ALIGNED_MALLOC(maxThreadNum * sizeof(TPBLFQueue<T>), 64)))
+				goto clean_3;
+
+			for (unsigned i = 0; i < maxThreadNum; ++i)
+			{
+				new (&queues[i]) TPBLFQueue<T>();
+
+				if (!queues[i].init(capacity))
+					goto clean_4;
+
+				succeed++;
+			}
+
+			return true;
+
+		clean_4:
+
+			for (unsigned i = 0; i < succeed; ++i)
+				queues[i].~TPBLFQueue<T>();
+
+		clean_3:
+
+			ALIGNED_FREE(queues);
+			queues = nullptr;
+
+		clean_2:
+
+			ALIGNED_FREE(containers);
+
+		clean_1:
+
+			delete[] startSem;
+
+			return false;
+		}
+
+		void rleaseResourse()
+		{
+			for (unsigned i = 0; i < maxThreadNum; ++i)
+				queues[i].~TPBLFQueue<T>();
+
+			ALIGNED_FREE(queues);
+			ALIGNED_FREE(containers);
+			delete[] startSem;
+			queues = nullptr;
+			workers.clear();
+			workers.shrink_to_fit();
 		}
 	};
 

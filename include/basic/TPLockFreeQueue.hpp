@@ -61,9 +61,6 @@ namespace HSLL
 	}
 
 	template<typename TYPE>
-	class TPBLFQueue;
-
-	template<typename TYPE>
 	class TPLFQueue
 	{
 		template<typename TYPE>
