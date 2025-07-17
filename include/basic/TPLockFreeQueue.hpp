@@ -177,7 +177,7 @@ namespace HSLL
 			while (sequence.load(std::memory_order_relaxed) != required);
 		}
 
-		void wait_pop(TYPE& out)
+		void wait_dequeue(TYPE& out)
 		{
 			assert(buffer);
 			Slot* slot;
@@ -190,7 +190,7 @@ namespace HSLL
 			slot->sequence.store(current_head + capacity, std::memory_order_release);
 		}
 
-		void wait_popBulk(TYPE* elements, unsigned int count)
+		void wait_dequeue_bulk(TYPE* elements, unsigned int count)
 		{
 			assert(buffer);
 			assert(elements && count);
@@ -254,7 +254,7 @@ namespace HSLL
 		}
 
 		template <class T>
-		bool push(T&& item)
+		bool enqueue(T&& item)
 		{
 			assert(buffer);
 			Slot* slot;
@@ -271,7 +271,7 @@ namespace HSLL
 		}
 
 		template <BULK_CMETHOD METHOD = COPY>
-		unsigned int pushBulk(TYPE* elements, unsigned int count)
+		unsigned int enqueue_bulk(TYPE* elements, unsigned int count)
 		{
 			assert(buffer);
 			assert(elements && count);
@@ -295,19 +295,19 @@ namespace HSLL
 			}
 
 			if (LIKELY(num < count))
-				return num + pushBulk<METHOD>(elements + num, count - num);
+				return num + enqueue_bulk<METHOD>(elements + num, count - num);
 
 			return count;
 		}
 
 		template <BULK_CMETHOD METHOD = COPY>
-		unsigned int pushBulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
+		unsigned int enqueue_bulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
 		{
 			assert(buffer);
 			assert(part1 && count1);
 
 			if (count2 == 0 || part2 == nullptr)
-				return pushBulk<METHOD>(part1, count1);
+				return enqueue_bulk<METHOD>(part1, count1);
 
 			unsigned int total = std::min(count1 + count2, capacity);
 			unsigned int num = total;
@@ -335,15 +335,15 @@ namespace HSLL
 			if (LIKELY(num < total))
 			{
 				if (num < count1)
-					return num + pushBulk<METHOD>(part1 + num, count1 - num, part2, count2);
+					return num + enqueue_bulk<METHOD>(part1 + num, count1 - num, part2, count2);
 				else
-					return num + pushBulk<METHOD>(part2 + num - count1, total - num);
+					return num + enqueue_bulk<METHOD>(part2 + num - count1, total - num);
 			}
 
 			return total;
 		}
 
-		bool pop(TYPE& out)
+		bool dequeue(TYPE& out)
 		{
 			assert(buffer);
 			Slot* slot;
@@ -361,7 +361,7 @@ namespace HSLL
 			return false;
 		}
 
-		unsigned int popBulk(TYPE* elements, unsigned int count)
+		unsigned int dequeue_bulk(TYPE* elements, unsigned int count)
 		{
 			assert(buffer);
 			assert(elements && count);
@@ -385,7 +385,7 @@ namespace HSLL
 			}
 
 			if (LIKELY(num < count))
-				return num + popBulk(elements + num, count - num);
+				return num + dequeue_bulk(elements + num, count - num);
 
 			return count;
 		}
@@ -504,10 +504,10 @@ namespace HSLL
 		}
 
 		template <class T>
-		bool push(T&& item)
+		bool enqueue(T&& item)
 		{
 			assert(flag);
-			if (LIKELY(queue.push(std::forward<T>(item))))
+			if (LIKELY(queue.enqueue(std::forward<T>(item))))
 			{
 				sem.signal();
 				return true;
@@ -517,11 +517,11 @@ namespace HSLL
 		}
 
 		template <BULK_CMETHOD METHOD = COPY>
-		unsigned int pushBulk(TYPE* elements, unsigned int count)
+		unsigned int enqueue_bulk(TYPE* elements, unsigned int count)
 		{
 			assert(flag);
 			unsigned int num;
-			if (LIKELY(num = queue.template pushBulk<METHOD>(elements, count)))
+			if (LIKELY(num = queue.template enqueue_bulk<METHOD>(elements, count)))
 			{
 				sem.signal(num);
 				return num;
@@ -531,11 +531,11 @@ namespace HSLL
 		}
 
 		template <BULK_CMETHOD METHOD = COPY>
-		unsigned int pushBulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
+		unsigned int enqueue_bulk(TYPE* part1, unsigned int count1, TYPE* part2, unsigned int count2)
 		{
 			assert(flag);
 			unsigned int num;
-			if (LIKELY(num = queue.template pushBulk<METHOD>(part1, count1, part2, count2)))
+			if (LIKELY(num = queue.template enqueue_bulk<METHOD>(part1, count1, part2, count2)))
 			{
 				sem.signal(num);
 				return num;
@@ -544,50 +544,50 @@ namespace HSLL
 			return 0;
 		}
 
-		bool pop(TYPE& element)
+		bool dequeue(TYPE& element)
 		{
 			assert(flag);
 			if (LIKELY(sem.tryWait()))
 			{
-				queue.wait_pop(element);
+				queue.wait_dequeue(element);
 				return true;
 			}
 
 			return false;
 		}
 
-		bool wait_pop(TYPE& element, std::int64_t timeout_usecs)
+		bool wait_dequeue(TYPE& element, std::int64_t timeout_usecs)
 		{
 			assert(flag);
 			if (LIKELY(sem.wait(timeout_usecs)))
 			{
-				queue.wait_pop(element);
+				queue.wait_dequeue(element);
 				return true;
 			}
 
 			return false;
 		}
 
-		unsigned int popBulk(TYPE* elements, unsigned int count)
+		unsigned int dequeue_bulk(TYPE* elements, unsigned int count)
 		{
 			assert(flag);
 			unsigned int num;
 			if (LIKELY(num = sem.tryWaitMany(count)))
 			{
-				queue.wait_popBulk(elements, num);
+				queue.wait_dequeue_bulk(elements, num);
 				return num;
 			}
 
 			return 0;
 		}
 
-		unsigned int wait_popBulk(TYPE* elements, unsigned int count, std::int64_t timeout_usecs)
+		unsigned int wait_dequeue_bulk(TYPE* elements, unsigned int count, std::int64_t timeout_usecs)
 		{
 			assert(flag);
 			unsigned int num = 0;
 			if (LIKELY(num = sem.waitMany(count, timeout_usecs)))
 			{
-				queue.wait_popBulk(elements, num);
+				queue.wait_dequeue_bulk(elements, num);
 				return num;
 			}
 

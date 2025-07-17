@@ -61,7 +61,7 @@ namespace HSLL
 				TPBLFQueue<T>* queue = queues + now;
 				if (queue->get_size() >= threshold && queue != ignore)
 				{
-					if (queue->pop(element))
+					if (queue->dequeue(element))
 					{
 						index = now;
 						return 1;
@@ -113,7 +113,7 @@ namespace HSLL
 				TPBLFQueue<T>* queue = queues + now;
 				if (queue->get_size() >= threshold && queue != ignore)
 				{
-					unsigned int count = queue->popBulk(elements, batchSize);
+					unsigned int count = queue->dequeue_bulk(elements, batchSize);
 					if (count)
 					{
 						index = now;
@@ -234,10 +234,10 @@ namespace HSLL
 			assert(queues);
 
 			if (maxThreadNum == 1)
-				return queues->push(std::forward<U>(task));
+				return queues->enqueue(std::forward<U>(task));
 
 			ReadLockGuard lock(rwLock);
-			return select_queue().push(std::forward<U>(task));
+			return select_queue().enqueue(std::forward<U>(task));
 		}
 
 		/**
@@ -253,10 +253,10 @@ namespace HSLL
 			assert(queues);
 
 			if (maxThreadNum == 1)
-				return queues->template pushBulk<METHOD>(tasks, count);
+				return queues->template enqueue_bulk<METHOD>(tasks, count);
 
 			ReadLockGuard lock(rwLock);
-			return select_queue_for_bulk(std::max(1u, count / 2)).template pushBulk<METHOD>(tasks, count);
+			return select_queue_for_bulk(std::max(1u, count / 2)).template enqueue_bulk<METHOD>(tasks, count);
 		}
 
 		/**
@@ -275,10 +275,10 @@ namespace HSLL
 			assert(queues);
 
 			if (maxThreadNum == 1)
-				return queues->template pushBulk<METHOD>(part1, count1, part2, count2);
+				return queues->template enqueue_bulk<METHOD>(part1, count1, part2, count2);
 
 			ReadLockGuard lock(rwLock);
-			return select_queue_for_bulk(std::max(1u, (count1 + count2) / 2)).template pushBulk<METHOD>(part1, count1, part2, count2);
+			return select_queue_for_bulk(std::max(1u, (count1 + count2) / 2)).template enqueue_bulk<METHOD>(part1, count1, part2, count2);
 		}
 
 		//Get the maximum occupied space of the thread pool.
@@ -504,13 +504,13 @@ namespace HSLL
 			{
 				while (true)
 				{
-					while (queue->pop(*task))
+					while (queue->dequeue(*task))
 					{
 						task->execute();
 						task->~T();
 					}
 
-					if (queue->wait_pop(*task, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS))
+					if (queue->wait_dequeue(*task, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS))
 					{
 						task->execute();
 						task->~T();
@@ -527,7 +527,7 @@ namespace HSLL
 
 				bool  shutdownPolicy = this->shutdownPolicy.load();
 
-				while (shutdownPolicy && queue->pop(*task))
+				while (shutdownPolicy && queue->dequeue(*task))
 				{
 					task->execute();
 					task->~T();
@@ -550,7 +550,7 @@ namespace HSLL
 			{
 				while (true)
 				{
-					while (queue->pop(*task))
+					while (queue->dequeue(*task))
 					{
 						task->execute();
 						task->~T();
@@ -563,7 +563,7 @@ namespace HSLL
 					}
 					else
 					{
-						if (queue->wait_pop(*task, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS))
+						if (queue->wait_dequeue(*task, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS))
 						{
 							task->execute();
 							task->~T();
@@ -581,7 +581,7 @@ namespace HSLL
 
 				bool  shutdownPolicy = this->shutdownPolicy.load();
 
-				while (shutdownPolicy && queue->pop(*task))
+				while (shutdownPolicy && queue->dequeue(*task))
 				{
 					task->execute();
 					task->~T();
@@ -620,13 +620,13 @@ namespace HSLL
 							std::this_thread::yield();
 						}
 
-						if (size && (count = queue->popBulk(tasks, size_threshold)))
+						if (size && (count = queue->dequeue_bulk(tasks, size_threshold)))
 							execute_tasks(tasks, count);
 						else
 							break;
 					}
 
-					count = queue->wait_popBulk(tasks, size_threshold, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS);
+					count = queue->wait_dequeue_bulk(tasks, size_threshold, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS);
 
 					if (count)
 					{
@@ -644,7 +644,7 @@ namespace HSLL
 
 				bool  shutdownPolicy = this->shutdownPolicy.load();
 
-				while (shutdownPolicy && (count = queue->popBulk(tasks, size_threshold)))
+				while (shutdownPolicy && (count = queue->dequeue_bulk(tasks, size_threshold)))
 					execute_tasks(tasks, count);
 
 				stopSem[index].signal();
@@ -681,7 +681,7 @@ namespace HSLL
 							std::this_thread::yield();
 						}
 
-						if (size && (count = queue->popBulk(tasks, size_threshold)))
+						if (size && (count = queue->dequeue_bulk(tasks, size_threshold)))
 							execute_tasks(tasks, count);
 						else
 							break;
@@ -694,7 +694,7 @@ namespace HSLL
 					}
 					else
 					{
-						count = queue->wait_popBulk(tasks, size_threshold, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS);
+						count = queue->wait_dequeue_bulk(tasks, size_threshold, HSLL_THREADPOOL_TIMEOUT_MICROSECONDS);
 
 						if (count)
 						{
@@ -713,7 +713,7 @@ namespace HSLL
 
 				bool  shutdownPolicy = this->shutdownPolicy.load();
 
-				while (shutdownPolicy && (count = queue->popBulk(tasks, size_threshold)))
+				while (shutdownPolicy && (count = queue->dequeue_bulk(tasks, size_threshold)))
 					execute_tasks(tasks, count);
 
 				stopSem[index].signal();
