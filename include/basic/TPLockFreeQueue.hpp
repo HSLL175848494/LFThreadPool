@@ -63,7 +63,7 @@ namespace HSLL
 	template<typename TYPE>
 	class TPLFQueue
 	{
-		template<typename TYPE>
+		template<typename T>
 		friend class TPBLFQueue;
 
 		struct Slot

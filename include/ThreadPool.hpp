@@ -22,7 +22,6 @@ static_assert(HSLL_THREADPOOL_SHRINK_FACTOR < HSLL_THREADPOOL_EXPAND_FACTOR&& HS
 
 namespace HSLL
 {
-
 	template <class T>
 	class SingleStealer
 	{
@@ -200,6 +199,8 @@ namespace HSLL
 
 			if (maxThreadNum > 1)
 				monitor = std::thread(&ThreadPool::load_monitor, this);
+
+			return true;
 		}
 
 
